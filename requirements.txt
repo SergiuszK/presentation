@@ -1,0 +1,7 @@
+numpy
+opencv-python
+adafruit-circuitpython-neopixel
+tensorflow
+paramiko
+opencv-python-headless
+imutils
