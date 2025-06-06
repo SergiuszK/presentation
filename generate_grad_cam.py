@@ -37,9 +37,9 @@ def build_model(input_shape=(256, 256, 3), num_classes=6561):
 
     return model
 
-new_model = build_model()
+model = build_model()
 
-new_model.load_weights('../../models/cnn_6561_outputs_final_250.h5')
+model.load_weights('../../models/cnn_6561_outputs_final_250.h5')
 
 def get_last_conv_layer_name(model):
     """Znajduje nazwę ostatniej warstwy konwolucyjnej w modelu."""
@@ -50,7 +50,7 @@ def get_last_conv_layer_name(model):
 
 LAST_CONV_LAYER_NAME = get_last_conv_layer_name(model)
 
-# --- Funkcje do Grad-CAM (bez zmian z Twojego kodu) ---
+# --- Funkcje do Grad-CAM (bez zmian) ---
 def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None):
     grad_model = tf.keras.models.Model(
         [model.inputs], [model.get_layer(last_conv_layer_name).output, model.output]
@@ -79,12 +79,44 @@ def overlay_heatmap(original_img, heatmap, alpha=0.7, cmap="viridis"):
     overlayed_img = cv2.addWeighted(original_img, 1 - alpha, colored_heatmap, alpha, 0)
     return overlayed_img
 
+# --- NOWE FUNKCJE DO WIZUALIZACJI PREDYKCJI ---
+def index_to_combination(index, num_segments=8, base=3):
+    """Konwertuje indeks klasy (0-6560) na 8-elementową listę kolorów."""
+    if not 0 <= index < base**num_segments:
+        raise ValueError(f"Index must be between 0 and {base**num_segments - 1}")
+    
+    combination = []
+    temp_index = index
+    for _ in range(num_segments):
+        combination.insert(0, temp_index % base)
+        temp_index //= base
+    return combination
+
+def draw_prediction_strip(combination, segment_height=40, segment_width=80):
+    """Tworzy obrazek z pionowym paskiem kolorów reprezentującym predykcję."""
+    # Definicja kolorów (R, G, B) - Matplotlib używa RGB
+    color_map = {
+        0: (255, 0, 0),    # Czerwony
+        1: (0, 255, 0),    # Zielony
+        2: (0, 0, 255)     # Niebieski
+    }
+    
+    strip_height = segment_height * len(combination)
+    strip = np.zeros((strip_height, segment_width, 3), dtype=np.uint8)
+    
+    for i, color_code in enumerate(combination):
+        start_y = i * segment_height
+        end_y = (i + 1) * segment_height
+        color_rgb = color_map.get(color_code, (0, 0, 0)) # Domyślnie czarny
+        strip[start_y:end_y, :] = color_rgb
+        
+    return strip
 
 def load_and_preprocess_image(image, input_shape=(256, 256)):
     """Przetwarza klatkę przechwyconą z wideo."""
     image = cv2.resize(image, input_shape)
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) # OpenCV wczytuje jako BGR
-    image_for_display = image.copy() # Kopia do wyświetlenia
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    image_for_display = image.copy()
     
     image = image.astype(np.float32) / 255.0
     image = np.expand_dims(image, axis=0)
@@ -95,74 +127,89 @@ HOST = '192.168.1.100'  # Zastąp adresem IP swojego Raspberry Pi
 PORT = 8089
 
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-client_socket.connect((HOST, PORT))
-print(f"Connected to {HOST}:{PORT}")
+try:
+    client_socket.connect((HOST, PORT))
+    print(f"Connected to {HOST}:{PORT}")
+except ConnectionRefusedError:
+    print(f"Connection to {HOST}:{PORT} was refused. Make sure the server script is running on the Raspberry Pi.")
+    exit()
+
 
 data = b""
 payload_size = struct.calcsize("L")
-
 cv2.namedWindow('Live Stream')
 
 while True:
-    while len(data) < payload_size:
-        data += client_socket.recv(4096)
+    try:
+        while len(data) < payload_size:
+            data += client_socket.recv(4096)
+            
+        packed_msg_size = data[:payload_size]
+        data = data[payload_size:]
+        msg_size = struct.unpack("L", packed_msg_size)[0]
         
-    packed_msg_size = data[:payload_size]
-    data = data[payload_size:]
-    msg_size = struct.unpack("L", packed_msg_size)[0]
-    
-    while len(data) < msg_size:
-        data += client_socket.recv(4096)
+        while len(data) < msg_size:
+            data += client_socket.recv(4096)
+            
+        frame_data = data[:msg_size]
+        data = data[msg_size:]
         
-    frame_data = data[:msg_size]
-    data = data[msg_size:]
-    
-    # Deserializacja ramki
-    frame = pickle.loads(frame_data)
-    
-    cv2.imshow('Live Stream', frame)
-    key = cv2.waitKey(1) & 0xFF
-
-    # Naciśnięcie Enter (kod 13)
-    if key == 13:
-        print("Enter pressed. Processing frame...")
+        frame = pickle.loads(frame_data)
         
-        # 1. Przetwarzanie obrazu
-        processed_image, display_image = load_and_preprocess_image(frame)
+        cv2.imshow('Live Stream', frame)
+        key = cv2.waitKey(1) & 0xFF
 
-        # 2. Predykcja
-        prediction = model.predict(processed_image)
-        # Możesz przetworzyć `prediction` aby uzyskać czytelną klasę
-        print(f"Prediction: {prediction[0]}")
+        if key == 13: # Enter
+            print("Enter pressed. Processing frame...")
+            
+            processed_image, display_image = load_and_preprocess_image(frame)
+            
+            predictions = model.predict(processed_image)
+            predicted_class_index = np.argmax(predictions[0])
+            
+            # 1. Konwersja indeksu na kombinację kolorów
+            predicted_combination = index_to_combination(predicted_class_index)
+            print(f"Predicted Class Index: {predicted_class_index}")
+            print(f"Predicted Combination: {predicted_combination}")
 
-        # 3. Generowanie heatmapy Grad-CAM
-        heatmap = make_gradcam_heatmap(processed_image, model, LAST_CONV_LAYER_NAME)
-        overlayed_image = overlay_heatmap(display_image, heatmap)
-        
-        # 4. Wyświetlanie wyników w nowym oknie
-        plt.figure(figsize=(12, 6))
-        
-        plt.subplot(1, 3, 1)
-        plt.title("Original Frame")
-        plt.imshow(display_image)
-        plt.axis("off")
+            # 2. Generowanie heatmapy Grad-CAM
+            heatmap = make_gradcam_heatmap(processed_image, model, LAST_CONV_LAYER_NAME, pred_index=predicted_class_index)
+            overlayed_image = overlay_heatmap(display_image, heatmap)
+            
+            # 3. Tworzenie wizualizacji predykcji
+            prediction_strip = draw_prediction_strip(predicted_combination)
+            
+            # 4. Wyświetlanie wyników w nowym, rozbudowanym oknie
+            fig, axs = plt.subplots(1, 4, figsize=(18, 5))
+            
+            axs[0].imshow(display_image)
+            axs[0].set_title("Original Frame")
+            axs[0].axis("off")
 
-        plt.subplot(1, 3, 2)
-        plt.title("Grad-CAM Heatmap")
-        plt.imshow(heatmap, cmap="viridis")
-        plt.axis("off")
+            axs[1].imshow(heatmap, cmap="viridis")
+            axs[1].set_title("Grad-CAM Heatmap")
+            axs[1].axis("off")
 
-        plt.subplot(1, 3, 3)
-        plt.title("Overlayed Image")
-        plt.imshow(overlayed_image)
-        plt.axis("off")
-        
-        plt.suptitle(f"Prediction Result: {prediction[0]}")
-        plt.tight_layout()
-        plt.show()
+            axs[2].imshow(overlayed_image)
+            axs[2].set_title("Overlayed Image")
+            axs[2].axis("off")
+            
+            axs[3].imshow(prediction_strip)
+            axs[3].set_title("Prediction")
+            axs[3].axis("off")
+            
+            fig.suptitle(f"Predicted Combination: {predicted_combination}", fontsize=16)
+            plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Dostosowanie, by tytuł główny nie nachodził
+            plt.show()
 
-    # Naciśnięcie 'q' aby zakończyć
-    if key == ord('q'):
+        if key == ord('q'):
+            break
+            
+    except (ConnectionResetError, BrokenPipeError):
+        print("Connection to server lost. Exiting.")
+        break
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
         break
 
 cv2.destroyAllWindows()
