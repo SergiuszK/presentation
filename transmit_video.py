@@ -12,7 +12,7 @@ picam2.configure(config)
 picam2.start()
 
 # Konfiguracja serwera
-HOST = '10.173.140.61'  # Użyj adresu IP Raspberry Pi
+HOST = '0.0.0.0'  # Użyj adresu IP Raspberry Pi
 PORT = 8089
 
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

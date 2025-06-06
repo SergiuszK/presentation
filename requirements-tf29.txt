@@ -1,0 +1,7 @@
+tensorflow==2.9.0
+matplotlib==3.10.0
+opencv-contrib-python==4.11.0.86
+opencv-python==4.11.0.86
+opencv-python-headless==4.11.0.86
+numpy==1.23.0
+ipykernel
